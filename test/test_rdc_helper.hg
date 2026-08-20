@@ -1,0 +1,11 @@
+#include <hggc_runtime.h>
+
+__device__ int rdc_double(int x)
+{
+    return x * 2;
+}
+
+__device__ int rdc_add_ten(int x)
+{
+    return x + 10;
+}

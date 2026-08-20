@@ -1,0 +1,25 @@
+{
+  "version": 3,
+  "cmakeMinimumRequired": { "major": 3, "minor": 20, "patch": 0 },
+  "configurePresets": [
+    {
+      "name": "default",
+      "displayName": "Default (auto-detect SDK)",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_MODULE_PATH": "${sourceDir}/cmake/Modules"
+      }
+    },
+    {
+      "name": "ppu-sdk",
+      "displayName": "PPU SDK (from environment)",
+      "binaryDir": "${sourceDir}/build",
+      "cacheVariables": {
+        "CMAKE_MODULE_PATH": "${sourceDir}/cmake/Modules"
+      },
+      "environment": {
+        "PPU_SDK": "/usr/local/PPU_SDK"
+      }
+    }
+  ]
+}

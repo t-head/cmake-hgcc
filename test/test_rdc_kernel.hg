@@ -1,0 +1,27 @@
+#include <stdio.h>
+#include <hggc_runtime.h>
+
+extern __device__ int rdc_double(int x);
+extern __device__ int rdc_add_ten(int x);
+
+__global__ void rdc_compute(int *out, int in)
+{
+    *out = rdc_add_ten(rdc_double(in));
+}
+
+int run_rdc_test()
+{
+    int *d_out;
+    int h_out = 0;
+
+    hggcMalloc((void **)&d_out, sizeof(int));
+    rdc_compute<<<1, 1>>>(d_out, 16);
+    hggcDeviceSynchronize();
+    hggcMemcpy(&h_out, d_out, sizeof(int), hggcMemcpyDeviceToHost);
+    hggcFree(d_out);
+
+    int expected = 16 * 2 + 10;
+    printf("RDC test: rdc_add_ten(rdc_double(16)) = %d (expected %d) — %s\n",
+           h_out, expected, h_out == expected ? "PASSED" : "FAILED");
+    return h_out == expected ? 0 : 1;
+}

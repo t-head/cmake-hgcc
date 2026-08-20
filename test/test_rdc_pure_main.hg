@@ -1,0 +1,10 @@
+#include <stdio.h>
+#include <hggc_runtime.h>
+
+extern int run_rdc_test();
+
+int main()
+{
+    printf("=== RDC Pure HG Test ===\n");
+    return run_rdc_test();
+}

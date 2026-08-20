@@ -1,0 +1,7 @@
+extern "C"
+__global__ void scale_kernel(float *data, float factor, int n)
+{
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < n)
+        data[i] *= factor;
+}

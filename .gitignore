@@ -1,0 +1,12 @@
+build/
+_build*/
+_install/
+*.pyc
+__pycache__/
+CMakeCache.txt
+CMakeFiles/
+cmake_install.cmake
+Makefile
+
+# Local environment config (Docker container name, paths, etc.)
+.local.env

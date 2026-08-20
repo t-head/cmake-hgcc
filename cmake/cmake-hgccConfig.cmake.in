@@ -1,0 +1,25 @@
+# Copyright (c) 2023-2026 T-Head (Shanghai) Semiconductor Co., Ltd.
+# SPDX-License-Identifier: Apache-2.0
+#
+@PACKAGE_INIT@
+
+# cmake-hgcc config package.
+#
+# After find_package(cmake-hgcc CONFIG), the HG language modules are available:
+#   enable_language(HG)          — or use project(... LANGUAGES HG)
+#   find_package(HGGCToolkit)    — find SDK libraries
+#   include(HGGCUtilities)       — convenience functions
+#
+# This config file simply prepends the module directory to CMAKE_MODULE_PATH.
+
+set(_cmake_hgcc_module_dir "${CMAKE_CURRENT_LIST_DIR}/Modules")
+
+if(IS_DIRECTORY "${_cmake_hgcc_module_dir}")
+  if(NOT "${_cmake_hgcc_module_dir}" IN_LIST CMAKE_MODULE_PATH)
+    list(PREPEND CMAKE_MODULE_PATH "${_cmake_hgcc_module_dir}")
+  endif()
+else()
+  message(WARNING "cmake-hgcc: module directory not found at ${_cmake_hgcc_module_dir}")
+endif()
+
+unset(_cmake_hgcc_module_dir)

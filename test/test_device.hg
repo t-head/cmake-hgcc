@@ -1,0 +1,20 @@
+#include <stdio.h>
+#include <hggc_runtime.h>
+
+__global__ void add_kernel_single(int *result, int a, int b)
+{
+    *result = a + b;
+}
+
+int device_add(int a, int b)
+{
+    int *d_result;
+    int h_result = 0;
+
+    hggcMalloc((void **)&d_result, sizeof(int));
+    add_kernel_single<<<1, 1>>>(d_result, a, b);
+    hggcDeviceSynchronize();
+    hggcMemcpy(&h_result, d_result, sizeof(int), hggcMemcpyDeviceToHost);
+    hggcFree(d_result);
+    return h_result;
+}

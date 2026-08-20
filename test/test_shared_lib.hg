@@ -1,0 +1,21 @@
+#include <hggc_runtime.h>
+
+__global__ void shared_kernel(float *data, int n)
+{
+    int i = blockDim.x * blockIdx.x + threadIdx.x;
+    if (i < n)
+        data[i] *= 2.0f;
+}
+
+extern "C" int shared_lib_scale(float *host_data, int n)
+{
+    float *d_data;
+    size_t size = n * sizeof(float);
+    hggcMalloc((void **)&d_data, size);
+    hggcMemcpy(d_data, host_data, size, hggcMemcpyHostToDevice);
+    shared_kernel<<<(n + 255) / 256, 256>>>(d_data, n);
+    hggcDeviceSynchronize();
+    hggcMemcpy(host_data, d_data, size, hggcMemcpyDeviceToHost);
+    hggcFree(d_data);
+    return 0;
+}
