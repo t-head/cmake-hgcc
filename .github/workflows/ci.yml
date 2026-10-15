@@ -1,0 +1,280 @@
+name: CI Pipeline
+
+on:
+  pull_request:
+    types: [opened, synchronize, reopened, ready_for_review]
+
+permissions:
+  contents: read
+  pull-requests: read
+
+concurrency:
+  group: ci-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  precheck:
+    name: Pre-check
+    uses: t-head/.github/.github/workflows/user-precheck.yml@main
+
+  smoke-test:
+    name: Smoke Test
+    needs: precheck
+    runs-on: ubuntu-24.04
+    timeout-minutes: 10
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Check script syntax
+        shell: bash
+        run: |
+          for script in envsetup.sh scripts/run_tests.sh scripts/cuda_to_hgcc.sh \
+                        .github/ci/run_device_tests.sh; do
+            bash -n "${script}"
+          done
+          sh -n .github/ci/feature_tests/compiler_launcher/launcher.sh
+          python3 -m py_compile scripts/migrate_cmake.py
+
+      - name: Install cmake-hgcc package
+        shell: bash
+        run: |
+          cmake -S . -B "${RUNNER_TEMP}/pkg-build"
+          cmake --install "${RUNNER_TEMP}/pkg-build" --prefix "${RUNNER_TEMP}/pkg-install"
+          # Every module under cmake/Modules must be installed
+          diff -r cmake/Modules "${RUNNER_TEMP}/pkg-install/share/cmake/cmake-hgcc/Modules"
+
+      - name: Consume installed package
+        shell: bash
+        run: |
+          consumer="${RUNNER_TEMP}/consumer"
+          mkdir -p "${consumer}"
+          cat > "${consumer}/CMakeLists.txt" <<'EOF'
+          cmake_minimum_required(VERSION 3.20)
+          project(cmake_hgcc_consumer LANGUAGES NONE)
+
+          find_package(cmake-hgcc 1.0 CONFIG REQUIRED)
+          include(HGGCUtilities)
+
+          foreach(_fn hgcc_add_fatbin hgcc_enable_rdc hgcc_add_rdc_executable
+                      hgcc_add_rdc_library hgcc_set_standard hgcc_fatbin_to_header)
+            if(NOT COMMAND ${_fn})
+              message(FATAL_ERROR "${_fn} is not defined by HGGCUtilities")
+            endif()
+          endforeach()
+
+          # Without an SDK the find module must report not-found, not error out
+          find_package(HGGCToolkit QUIET)
+
+          message(STATUS "cmake-hgcc ${cmake-hgcc_VERSION} found at ${cmake-hgcc_DIR}")
+          EOF
+          cmake -S "${consumer}" -B "${consumer}/build" \
+            -DCMAKE_PREFIX_PATH="${RUNNER_TEMP}/pkg-install"
+
+  ai-code-review:
+    name: AI Code Review (Copilot Gate)
+    needs: precheck
+    uses: t-head/.github/.github/workflows/ai-code-review.yml@main
+    secrets: inherit
+
+  ci:
+    name: Full CI
+    needs: [smoke-test, ai-code-review]
+    runs-on: ubuntu-24.04
+    timeout-minutes: 60
+    env:
+      # ppu-test runs what this job builds in an image of the same SDK release:
+      # bump the two together.
+      PPU_SDK_URL: https://download.t-head.cn/artifactory/ptgai-generic-release/PPU_SDK/v2.2.0/ppu_hggcrt3_ubuntu2404-2.2.0-663c22.run
+      PPU_SDK_SHA256: 77353c4828f72b056ec736677cf5ccb464bc97ff4f7b6dda2574d58c6f0cb0c5
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          persist-credentials: false
+
+      - name: Install Ninja
+        shell: bash
+        run: |
+          if ! command -v ninja >/dev/null 2>&1; then
+            sudo apt-get update
+            sudo apt-get install -y --no-install-recommends ninja-build
+          fi
+          cmake --version
+          ninja --version
+
+      - name: Download and install PPU SDK
+        shell: bash
+        run: |
+          set -euo pipefail
+          installer="${RUNNER_TEMP}/${PPU_SDK_URL##*/}"
+          curl --fail --location --retry 3 --retry-delay 5 \
+            --output "${installer}" "${PPU_SDK_URL}"
+          echo "${PPU_SDK_SHA256}  ${installer}" | sha256sum --check
+          sudo bash "${installer}" --prefix=/usr/local/ --silent
+          rm -f "${installer}"
+
+          sdk_dir=/usr/local/PPU_SDK
+          if [[ ! -f "${sdk_dir}/envsetup.sh" ]]; then
+            sdk_env=$(sudo find /usr/local -maxdepth 3 -type f \
+              -name envsetup.sh \
+              ! -path '*/ppu-smi/*' \
+              ! -path '*/asight/*' \
+              -print -quit)
+            if [[ -n "${sdk_env}" ]]; then
+              sdk_dir=$(dirname "${sdk_env}")
+            fi
+          fi
+
+          if [[ ! -f "${sdk_dir}/envsetup.sh" ]]; then
+            echo "PPU SDK envsetup.sh not found under /usr/local" >&2
+            sudo find /usr/local -maxdepth 2 -type d -print
+            exit 1
+          fi
+
+          {
+            echo "PPU_SDK=${sdk_dir}"
+            echo "PPU_PATH=${sdk_dir}"
+            echo "PPU_HOME=${sdk_dir}"
+          } >> "${GITHUB_ENV}"
+          echo "PPU_SDK=${sdk_dir}"
+
+      - name: Build tests and run device-free cases
+        shell: bash
+        run: |
+          # envsetup.sh belongs to the SDK; keep errexit off while sourcing it
+          set +e
+          source "${PPU_SDK}/envsetup.sh"
+          set -e
+          "${PPU_SDK}/bin/hgcc" --version
+
+          # test/ is the suite scripts/run_tests.sh runs; .github/ci/feature_tests
+          # adds one nested project per documented feature that test/ does not
+          # cover. Hosted runners have no PPU device: everything is configured
+          # and built, but only the cases that need no device are run here. The
+          # ppu-test job runs the others on an 810E with the binaries built here.
+          build_suite() {
+            local name="$1" src="$2" generator="$3"
+            shift 3
+            local dir="${RUNNER_TEMP}/build/${name}"
+            echo "::group::${name} (${generator})"
+            cmake -G "${generator}" -DCMAKE_MODULE_PATH="${GITHUB_WORKSPACE}/cmake/Modules" \
+              -S "${src}" -B "${dir}" "$@"
+            cmake --build "${dir}" -j "$(nproc)"
+            echo "::endgroup::"
+          }
+          run_ctest() {
+            local name="$1"
+            shift
+            echo "::group::ctest ${name}"
+            ctest --test-dir "${RUNNER_TEMP}/build/${name}" \
+              --output-on-failure --no-tests=error "$@"
+            echo "::endgroup::"
+          }
+
+          # test/ leaves the device arch to hgcc's default, which need not match
+          # the 810E (ppu_10) ppu-test runs on: build both PPU generations, as the
+          # feature tests do by default. The Ninja build also turns on the .cu
+          # extension so test/'s cu_compat case gets compiled; the Makefiles
+          # build keeps the default (OFF).
+          build_suite unit-make "${GITHUB_WORKSPACE}/test" "Unix Makefiles" \
+            -DCMAKE_HG_ARCHITECTURES=ppu_10,ppu_15
+          build_suite unit-ninja "${GITHUB_WORKSPACE}/test" Ninja \
+            -DCMAKE_HG_ARCHITECTURES=ppu_10,ppu_15 -DCMAKE_HG_ENABLE_CU_EXTENSION=ON
+          build_suite features-make "${GITHUB_WORKSPACE}/.github/ci/feature_tests" "Unix Makefiles" \
+            -DHGGC_RUN_DEVICE_TESTS=OFF
+          build_suite features-ninja "${GITHUB_WORKSPACE}/.github/ci/feature_tests" Ninja \
+            -DHGGC_RUN_DEVICE_TESTS=OFF
+
+          # fatbin_exists only checks the generated file; every other test/ case
+          # launches a kernel. The feature tests build their nested projects
+          # inside ctest and skip running the binaries that need a device.
+          run_ctest unit-make -R '^fatbin_exists$'
+          run_ctest unit-ninja -R '^fatbin_exists$'
+          run_ctest features-make -j "$(nproc)"
+          run_ctest features-ninja -j "$(nproc)"
+
+      - name: Pack device test binaries
+        shell: bash
+        run: |
+          # upload-artifact drops file modes, so the build trees travel as one
+          # tarball. CMakeFiles/ (object files, CMake's own state) stays behind:
+          # ppu-test only runs the binaries.
+          tar -czf "${RUNNER_TEMP}/device-tests.tar.gz" --exclude=CMakeFiles \
+            -C "${RUNNER_TEMP}/build" unit-make unit-ninja features-make features-ninja
+          ls -l "${RUNNER_TEMP}/device-tests.tar.gz"
+
+      - name: Upload device test binaries
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: device-tests
+          path: ${{ runner.temp }}/device-tests.tar.gz
+          if-no-files-found: error
+          # Already gzip-compressed
+          compression-level: 0
+          # A re-run of this job replaces the archive instead of failing on it
+          overwrite: true
+          # Leaves time to re-run ppu-test when the review gate opens late
+          retention-days: 7
+
+      - name: Upload build and test logs
+        if: ${{ failure() }}
+        uses: actions/upload-artifact@ea165f8d65b6e75b540449e92b4886f43607fa02 # v4.6.2
+        with:
+          name: cmake-hgcc-ci-logs
+          path: |
+            ${{ runner.temp }}/build/**/CMakeFiles/*.log
+            ${{ runner.temp }}/build/**/CMakeFiles/*.yaml
+            ${{ runner.temp }}/build/*/Testing/Temporary/LastTest*.log
+          if-no-files-found: ignore
+          retention-days: 7
+
+  human-review:
+    name: Human Review Gate
+    needs: ci
+    uses: t-head/.github/.github/workflows/human-review.yml@main
+    secrets: inherit
+
+  ppu-test:
+    name: PPU Device Tests (810E)
+    # The 810E pool is small and shared, so it only serves PRs a maintainer has
+    # approved. Full CI built the binaries.
+    needs: [ci, human-review]
+    runs-on: k8s-runner-group-cpu-thead
+    container:
+      image: ghcr.io/actions/actions-runner:latest
+    timeout-minutes: 75
+    steps:
+      - name: Check out repository
+        uses: actions/checkout@11bd71901bbe5b1630ceea73d27597364c9af683 # v4.2.2
+        with:
+          # The action ships the whole workspace, .git included, to NAS and the pod
+          persist-credentials: false
+
+      - name: Download device test binaries
+        uses: actions/download-artifact@d3f86a106a0bac45b974a628896c90dbdf5c8093 # v4.3.0
+        with:
+          name: device-tests
+          path: device-tests
+
+      # The action stages the workspace, downloaded archive included, to NAS and
+      # unpacks it under /workspace/source in a pod on an 810E. The PPU pool
+      # takes no build work: the pod only runs what Full CI built.
+      - name: Run device cases on PPU (810E)
+        uses: t-head/ppu-scheduler-action@main
+        with:
+          # Same PPU SDK release as Full CI's PPU_SDK_URL (2.2.0, hggcrt3, Ubuntu
+          # 24.04), which built the binaries: bump the two together.
+          image: download.t-head.cn/docker_release/pytorch:sdk2.2.0-2.10.0-ubuntu24.04-hggcrt3-py312-20261005
+          nnodes: 0
+          nproc_per_node: 1
+          node_selector: "board-type=OAM-810E"
+          namespace: ppu-sched
+          # Counted from submission, so it includes waiting for a free PPU
+          timeout_minutes: 60
+          command: |
+            set -e
+            cd /workspace/source
+            bash .github/ci/run_device_tests.sh device-tests/device-tests.tar.gz

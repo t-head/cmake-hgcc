@@ -1,0 +1,38 @@
+#include <stdio.h>
+
+// Compile-time probe for the effective C++ standard of an HG source.
+// Built twice by CMakeLists.txt: once with the project-wide CMAKE_HG_STANDARD=17
+// and once with hgcc_set_standard(<target> 14) applied on top of it.
+//
+// The bounds are ranges rather than exact values so the check stays valid
+// whatever __cplusplus value hgcc reports for a given -std=c++NN.
+
+#if !defined(__cplusplus)
+#error "__cplusplus is not defined"
+#endif
+
+#if defined(EXPECT_CXX14)
+#  if __cplusplus >= 201703L
+#    error "hgcc_set_standard(target 14) did not override CMAKE_HG_STANDARD=17"
+#  endif
+#  if __cplusplus < 201402L
+#    error "expected C++14, got something older"
+#  endif
+#elif defined(EXPECT_CXX17)
+#  if __cplusplus < 201703L
+#    error "CMAKE_HG_STANDARD=17 was not applied to this target"
+#  endif
+#else
+#  error "define EXPECT_CXX14 or EXPECT_CXX17"
+#endif
+
+__global__ void std_probe_kernel(int *out)
+{
+    *out = (int)(__cplusplus / 100);
+}
+
+int main()
+{
+    printf("__cplusplus = %ld\n", (long)__cplusplus);
+    return 0;
+}
