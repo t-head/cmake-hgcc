@@ -1,0 +1,19 @@
+#include <stdio.h>
+
+// launcher.sh injects -DHGGC_LAUNCHER_ACTIVE=1 when it wraps the compiler.
+// A missing macro means CMAKE_HG_COMPILER_LAUNCHER never reached the HG compile
+// rule, so fail the build with a message that says exactly that.
+#ifndef HGGC_LAUNCHER_ACTIVE
+#error "CMAKE_HG_COMPILER_LAUNCHER was not applied to the HG compile rule"
+#endif
+
+__global__ void launcher_probe_kernel(int *out)
+{
+    *out = HGGC_LAUNCHER_ACTIVE;
+}
+
+int main()
+{
+    printf("compiler launcher active: %d\n", HGGC_LAUNCHER_ACTIVE);
+    return HGGC_LAUNCHER_ACTIVE == 1 ? 0 : 1;
+}
