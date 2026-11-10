@@ -272,7 +272,7 @@ jobs:
       # unpacks it under /workspace/source in a pod on an 810E. The PPU pool
       # takes no build work: the pod only runs what Full CI built.
       - name: Run device cases on PPU (810E)
-        uses: t-head/ppu-scheduler-action@main
+        uses: t-head/ci-infra/cluster-run@main
         with:
           # Same PPU SDK release as Full CI's PPU_SDK_URL (2.2.0, hggcrt3, Ubuntu
           # 24.04), which built the binaries: bump the two together.
